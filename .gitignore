@@ -1,0 +1,7 @@
+# Python virtual environment and cache
+.venv/
+__pycache__/
+*.pyc
+
+# Never commit passwords or local settings
+.env
