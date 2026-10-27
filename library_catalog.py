@@ -1,7 +1,7 @@
 """
 library_catalog.py
 Library Catalog - a command-line program that stores books, authors,
-members, and loans in a MySQL relational database.
+genres, members, and loans in a MySQL relational database.
 
 CSE 310 - SQL Relational Databases module
 Author: Carolina Madella
@@ -173,27 +173,60 @@ def choose_author(connection):
         return add_author(connection)
     return authors[choice - 1][0]
 
+# ---------------------------------------------------------------
+# Genres
+# ---------------------------------------------------------------
+
+def add_genre(connection):
+    """INSERT: add a new genre and return its ID. If the genre already
+    exists, the UNIQUE rule blocks the duplicate and we reuse the existing one."""
+    name = ask_text("New genre name: ").title()
+    try:
+        new_id = run_change(connection, "INSERT INTO genres (name) VALUES (%s)", (name,))
+        print(f"Genre '{name}' was added.")
+        return new_id
+    except mysql.connector.IntegrityError:
+        print(f"'{name}' already exists, so the existing genre was used.")
+        return fetch_all(
+            connection, "SELECT genre_id FROM genres WHERE name = %s", (name,)
+        )[0][0]
+
+
+def choose_genre(connection):
+    """Show the genres and let the user pick one by number, type 0 to add
+    a new genre, or press Enter for no genre. Returns a genre_id or None."""
+    genres = fetch_all(connection, "SELECT genre_id, name FROM genres ORDER BY name")
+    print("\nGenres:")
+    for number, (_, name) in enumerate(genres, start=1):
+        print(f"  {number}. {name}")
+    print("  0. Add a new genre")
+    choice = ask_number("Choose the genre (Enter = none): ", 0, len(genres), allow_blank=True)
+    if choice is None:
+        return None
+    if choice == 0:
+        return add_genre(connection)
+    return genres[choice - 1][0]
 
 # ---------------------------------------------------------------
 # Books
 # ---------------------------------------------------------------
 
-# Every book list uses this JOIN so it can show the author's name
-# instead of just the author_id number
+# Every book list uses these JOINs so it can show the author's and genre's
+# names instead of just ID numbers. LEFT JOIN keeps books that have no genre.
 BOOK_QUERY = (
     "SELECT b.book_id, b.title, a.first_name, a.last_name, "
-    "b.genre, b.year_published, b.copies_available "
+    "g.name, b.year_published, b.copies_available "
     "FROM books AS b "
-    "JOIN authors AS a ON b.author_id = a.author_id"
+    "JOIN authors AS a ON b.author_id = a.author_id "
+    "LEFT JOIN genres AS g ON b.genre_id = g.genre_id"
 )
-
 
 def add_book(connection):
     """INSERT: ask for the book details and save a new row in 'books'."""
     print("\n--- Add a Book ---")
     title = ask_text("Title: ")
     author_id = choose_author(connection)
-    genre = ask_text("Genre (optional): ", required=False) or None
+    genre_id = choose_genre(connection)
     year = ask_number("Year published (optional): ", 0, 2100, allow_blank=True)
     copies = ask_number("Copies available (Enter = 1): ", 0, 999, allow_blank=True)
     if copies is None:
@@ -201,9 +234,9 @@ def add_book(connection):
 
     new_id = run_change(
         connection,
-        "INSERT INTO books (title, author_id, genre, year_published, copies_available) "
+        "INSERT INTO books (title, author_id, genre_id, year_published, copies_available) "
         "VALUES (%s, %s, %s, %s, %s)",
-        (title, author_id, genre, year, copies),
+        (title, author_id, genre_id, year, copies),
     )
     print(f"'{title}' was added (book ID {new_id}).")
 
@@ -246,7 +279,7 @@ def search_books(connection):
         where = " WHERE a.first_name LIKE %s OR a.last_name LIKE %s"
         values = (pattern, pattern)
     else:
-        where = " WHERE b.genre LIKE %s"
+        where = " WHERE g.name LIKE %s"
         values = (pattern,)
 
     display_books(fetch_all(connection, BOOK_QUERY + where + " ORDER BY b.title", values))
@@ -268,7 +301,9 @@ def update_book(connection):
         return
     title, genre, year, copies = fetch_all(
         connection,
-        "SELECT title, genre, year_published, copies_available FROM books WHERE book_id = %s",
+        "SELECT b.title, g.name, b.year_published, b.copies_available "
+        "FROM books AS b LEFT JOIN genres AS g ON b.genre_id = g.genre_id "
+        "WHERE b.book_id = %s",
         (book_id,),
     )[0]
     print("\nPress Enter to keep the current value shown in [brackets].")
@@ -280,9 +315,8 @@ def update_book(connection):
         changes["title"] = new_title
     if confirm("Change the author?"):
         changes["author_id"] = choose_author(connection)
-    new_genre = ask_text(f"Genre [{genre or '-'}]: ", required=False)
-    if new_genre:
-        changes["genre"] = new_genre
+    if confirm(f"Change the genre [{genre or '-'}]?"):
+        changes["genre_id"] = choose_genre(connection)
     new_year = ask_number(f"Year published [{year or '-'}]: ", 0, 2100, allow_blank=True)
     if new_year is not None:
         changes["year_published"] = new_year
@@ -293,7 +327,7 @@ def update_book(connection):
     if not changes:
         print("No changes made.")
         return
-    # Builds, for example: UPDATE books SET genre = %s, year_published = %s WHERE book_id = %s
+    # Builds, for example: UPDATE books SET genre_id = %s, year_published = %s WHERE book_id = %s
     # The column names come from this code; the user's values are sent separately.
     set_clause = ", ".join(f"{column} = %s" for column in changes)
     run_change(
@@ -519,8 +553,9 @@ def report_books_per_genre(connection):
     """COUNT books in each genre."""
     rows = fetch_all(
         connection,
-        "SELECT COALESCE(genre, '(no genre)') AS genre_name, COUNT(*) AS total "
-        "FROM books GROUP BY genre_name ORDER BY total DESC, genre_name",
+        "SELECT COALESCE(g.name, '(no genre)') AS genre_name, COUNT(*) AS total "
+        "FROM books AS b LEFT JOIN genres AS g ON b.genre_id = g.genre_id "
+        "GROUP BY genre_name ORDER BY total DESC, genre_name",
     )
     print(f"\n{'Genre':<20}Books")
     print("-" * 26)
