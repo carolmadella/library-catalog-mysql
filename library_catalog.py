@@ -12,6 +12,7 @@ import os
 from datetime import date, datetime, timedelta
 
 import mysql.connector
+from mysql.connector import errorcode
 
 # File that holds the CREATE DATABASE and CREATE TABLE commands
 SCHEMA_FILE = "schema.sql"
@@ -84,13 +85,29 @@ def run_change(connection, sql, values=()):
 # Input helpers
 # ---------------------------------------------------------------
 
-def ask_text(prompt, required=True):
-    """Ask for text. If the field is required, keep asking until it is not empty."""
+def ask_text(prompt, required=True, max_length=None):
+    """Ask for text. If the field is required, keep asking until it is not empty.
+    max_length matches the column size in schema.sql (for example VARCHAR(50)),
+    so the user gets a clear message instead of a database error."""
     while True:
         answer = input(prompt).strip()
-        if answer or not required:
+        if not answer and required:
+            print("  This field is required. Please try again.")
+        elif max_length and len(answer) > max_length:
+            print(f"  Please use {max_length} characters or fewer.")
+        else:
             return answer
-        print("  This field is required. Please try again.")
+
+
+def ask_email(prompt):
+    """Ask for an email address and do a simple format check:
+    one @, something before it, and a dot in the part after it."""
+    while True:
+        email = ask_text(prompt, max_length=100).lower()
+        name, at_sign, domain = email.partition("@")
+        if name and at_sign and "." in domain and "@" not in domain and " " not in email:
+            return email
+        print("  Please enter a valid email address (example: name@example.com).")
 
 
 def ask_number(prompt, minimum, maximum, allow_blank=False):
@@ -148,8 +165,8 @@ def get_authors(connection):
 
 def add_author(connection):
     """INSERT: add a new author and return the new author's ID."""
-    first_name = ask_text("Author first name: ")
-    last_name = ask_text("Author last name: ")
+    first_name = ask_text("Author first name: ", max_length=50)
+    last_name = ask_text("Author last name: ", max_length=50)
     # %s placeholders let the connector insert the values safely
     new_id = run_change(
         connection,
@@ -173,6 +190,7 @@ def choose_author(connection):
         return add_author(connection)
     return authors[choice - 1][0]
 
+
 # ---------------------------------------------------------------
 # Genres
 # ---------------------------------------------------------------
@@ -180,7 +198,7 @@ def choose_author(connection):
 def add_genre(connection):
     """INSERT: add a new genre and return its ID. If the genre already
     exists, the UNIQUE rule blocks the duplicate and we reuse the existing one."""
-    name = ask_text("New genre name: ").title()
+    name = ask_text("New genre name: ", max_length=50).title()
     try:
         new_id = run_change(connection, "INSERT INTO genres (name) VALUES (%s)", (name,))
         print(f"Genre '{name}' was added.")
@@ -207,6 +225,7 @@ def choose_genre(connection):
         return add_genre(connection)
     return genres[choice - 1][0]
 
+
 # ---------------------------------------------------------------
 # Books
 # ---------------------------------------------------------------
@@ -221,10 +240,11 @@ BOOK_QUERY = (
     "LEFT JOIN genres AS g ON b.genre_id = g.genre_id"
 )
 
+
 def add_book(connection):
     """INSERT: ask for the book details and save a new row in 'books'."""
     print("\n--- Add a Book ---")
-    title = ask_text("Title: ")
+    title = ask_text("Title: ", max_length=200)
     author_id = choose_author(connection)
     genre_id = choose_genre(connection)
     year = ask_number("Year published (optional): ", 0, 2100, allow_blank=True)
@@ -310,7 +330,7 @@ def update_book(connection):
 
     # Only the fields the user changes go into this dictionary
     changes = {}
-    new_title = ask_text(f"Title [{title}]: ", required=False)
+    new_title = ask_text(f"Title [{title}]: ", required=False, max_length=200)
     if new_title:
         changes["title"] = new_title
     if confirm("Change the author?"):
@@ -364,11 +384,20 @@ def delete_book(connection):
 # ---------------------------------------------------------------
 
 def add_member(connection):
-    """INSERT: add a library member. The email must be unique."""
+    """INSERT: add a library member. The email must be unique, so if it is
+    already used, the user is asked for a different one."""
     print("\n--- Add a Member ---")
-    first_name = ask_text("First name: ")
-    last_name = ask_text("Last name: ")
-    email = ask_text("Email: ").lower()
+    first_name = ask_text("First name: ", max_length=50)
+    last_name = ask_text("Last name: ", max_length=50)
+    while True:
+        email = ask_email("Email: ")
+        # SELECT: check whether another member already uses this email
+        taken = fetch_all(
+            connection, "SELECT COUNT(*) FROM members WHERE email = %s", (email,)
+        )[0][0]
+        if not taken:
+            break
+        print("  That email is already used by another member. Please enter a different one.")
     try:
         new_id = run_change(
             connection,
@@ -378,9 +407,8 @@ def add_member(connection):
         )
         print(f"{first_name} {last_name} is now a member (member ID {new_id}).")
     except mysql.connector.IntegrityError:
-        # The UNIQUE rule on email blocks duplicates
+        # Safety net: the UNIQUE rule on email still blocks duplicates
         print("A member with that email already exists.")
-
 
 def list_members(connection):
     """SELECT: show every member, sorted by last name. Returns the rows."""
@@ -550,7 +578,7 @@ def return_book(connection):
 # ---------------------------------------------------------------
 
 def report_books_per_genre(connection):
-    """COUNT books in each genre."""
+    """COUNT books in each genre (JOIN books to genres to get the names)."""
     rows = fetch_all(
         connection,
         "SELECT COALESCE(g.name, '(no genre)') AS genre_name, COUNT(*) AS total "
@@ -640,6 +668,30 @@ def reports_menu(connection):
 
 
 # ---------------------------------------------------------------
+# Error handling
+# ---------------------------------------------------------------
+
+def explain_connection_error(error):
+    """Turn a MySQL connection error into a friendly message with a next step."""
+    if error.errno == errorcode.ER_ACCESS_DENIED_ERROR:
+        print("Could not log in: the MySQL password is wrong. Please run the program again.")
+    elif error.errno in (errorcode.CR_CONNECTION_ERROR, errorcode.CR_CONN_HOST_ERROR):
+        print("Could not reach MySQL. The server may not be running.")
+        print("Start it with: sudo /usr/local/mysql/support-files/mysql.server start")
+    else:
+        print("Could not connect to MySQL:", error.msg)
+
+
+def ensure_connected(connection):
+    """If MySQL closed the connection (for example after a long idle time),
+    reconnect and select the library_catalog database again."""
+    if not connection.is_connected():
+        print("(Reconnecting to MySQL...)")
+        connection.reconnect(attempts=2, delay=1)
+        create_tables(connection)
+
+
+# ---------------------------------------------------------------
 # Main menu
 # ---------------------------------------------------------------
 
@@ -653,50 +705,76 @@ def show_menu():
     print("          0. Exit")
 
 
+def run_menu_choice(connection, choice):
+    """Run the feature that matches the menu number the user typed."""
+    if choice == "1":
+        add_book(connection)
+    elif choice == "2":
+        print("\n--- All Books ---")
+        list_books(connection)
+    elif choice == "3":
+        search_books(connection)
+    elif choice == "4":
+        update_book(connection)
+    elif choice == "5":
+        delete_book(connection)
+    elif choice == "6":
+        add_member(connection)
+    elif choice == "7":
+        print("\n--- Members ---")
+        list_members(connection)
+    elif choice == "8":
+        delete_member(connection)
+    elif choice == "9":
+        check_out_book(connection)
+    elif choice == "10":
+        return_book(connection)
+    elif choice == "11":
+        print("\n--- Checked-Out Books ---")
+        list_checked_out(connection)
+    elif choice == "12":
+        reports_menu(connection)
+    else:
+        print("Invalid option. Please choose a number from the menu.")
+
+
 def main():
     """Connect, make sure the tables exist, then run the menu until the user exits."""
-    connection = connect_to_server()
-    create_tables(connection)
+    try:
+        connection = connect_to_server()
+        create_tables(connection)
+    except mysql.connector.Error as error:
+        explain_connection_error(error)
+        return
+    except FileNotFoundError:
+        print(f"Could not find {SCHEMA_FILE}. Run the program from the project folder.")
+        return
     print("Connected to the library_catalog database.")
 
-    while True:
-        show_menu()
-        choice = input("Choose an option: ").strip()
-
-        if choice == "1":
-            add_book(connection)
-        elif choice == "2":
-            print("\n--- All Books ---")
-            list_books(connection)
-        elif choice == "3":
-            search_books(connection)
-        elif choice == "4":
-            update_book(connection)
-        elif choice == "5":
-            delete_book(connection)
-        elif choice == "6":
-            add_member(connection)
-        elif choice == "7":
-            print("\n--- Members ---")
-            list_members(connection)
-        elif choice == "8":
-            delete_member(connection)
-        elif choice == "9":
-            check_out_book(connection)
-        elif choice == "10":
-            return_book(connection)
-        elif choice == "11":
-            print("\n--- Checked-Out Books ---")
-            list_checked_out(connection)
-        elif choice == "12":
-            reports_menu(connection)
-        elif choice == "0":
-            print("Goodbye!")
-            break
-        else:
-            print("Invalid option. Please choose a number from the menu.")
-
-    connection.close()
+    try:
+        while True:
+            show_menu()
+            choice = input("Choose an option: ").strip()
+            if choice == "0":
+                print("Goodbye!")
+                break
+            # If one action fails, show the problem, undo any half-saved
+            # changes, and return to the menu instead of crashing
+            try:
+                ensure_connected(connection)
+                run_menu_choice(connection, choice)
+            except mysql.connector.Error as error:
+                try:
+                    connection.rollback()   # undo anything half-saved
+                except mysql.connector.Error:
+                    pass                    # the connection itself may be gone
+                print(f"Database error: {error.msg}")
+                print("Nothing was saved. Please try again.")
+    except (KeyboardInterrupt, EOFError):
+        # Ctrl+C (or closing the input) ends the program cleanly
+        print("\nGoodbye!")
+    finally:
+        connection.close()
 
 
 if __name__ == "__main__":
