@@ -30,7 +30,7 @@ To practice these skills, I built **Library Catalog**, a Python command-line pro
 
 My purpose for writing this software was to learn how to design a relational database from scratch and how a program talks to it: creating tables, inserting, retrieving, updating, and deleting rows, joining related tables, summarizing data, and handling errors and bad input without crashing.
 
-[Software Demo Video](http://youtube.link.goes.here)
+[Software Demo Video](https://youtu.be/kkfVzNcqhl0)
 
 # Relational Database
 
@@ -106,6 +106,17 @@ How to read the diagram: one author writes many books, one genre categorizes man
 * **MySQL Workbench** - to test SQL queries before adding them to Python and to look at the data
 * **Git and GitHub** - version control
 * **uv** - to create a Python virtual environment and install packages
+* # AI Assistance
+
+I used Claude (an AI assistant) as a tutor during this project. It helped me:
+
+* plan the work into daily tasks
+* write a video script to help me organize the process
+* design the database tables
+* debug the Python code, which I tested and ran step by step on my computer
+* draft this README and the outline for my demo video
+
+I set up and configured MySQL, tested every feature, made design decisions (such as asking for a new email when one is already used), and studied the code so I can explain how each part works.
 
 The program is written in **Python 3.13** and uses these libraries:
 
